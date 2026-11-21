@@ -13,6 +13,25 @@ import baseline
 
 
 class GenerationTests(unittest.TestCase):
+    def test_indexed_archive_round_trip_and_corruption(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / 'run'
+            with contextlib.redirect_stdout(io.StringIO()):
+                baseline.generate(argparse.Namespace(run_dir=root, count=23, seed_start=5))
+            manifest = baseline.read_manifest(root)
+            self.assertEqual(manifest['automata_sha256'], baseline.digest(root / 'automata.jsonl'))
+            rows = baseline.metadata_rows(root)
+            self.assertEqual([row['seed'] for row in rows], list(range(5, 28)))
+            for row in rows:
+                data = baseline.read_automaton(root, row)
+                self.assertEqual(data['seed'], row['seed'])
+                self.assertEqual(data['automaton_id'], row['automaton_id'])
+            with (root / 'automata.jsonl').open('r+b') as archive:
+                archive.seek(rows[-1]['input_offset'])
+                archive.write(b'X')
+            with self.assertRaises(ValueError):
+                baseline.read_automaton(root, rows[-1])
+
     def test_original_ten_automata(self):
         # SHA-256 values measured from the generator in the alife-2026 tag.
         expected = [
@@ -69,12 +88,12 @@ class BoundsTests(unittest.TestCase):
             baseline.validate_bounds({**self.upper, 'lower_bound': 2, 'exact': True})
 
     def make_case(self):
-        (self.root / 'automata').mkdir()
         data = dict(transitions=[[min(s+1, 8)] * 8 for s in range(15)])
-        path = self.root / 'automata' / '00001.json'
-        baseline.save_json(path, data)
+        path = self.root / 'automata.jsonl'
+        path.write_text(json.dumps(data) + '\n')
         metadata = dict(automaton_id=1, seed=0, num_states=15, reachable_states=9,
-                        fitness=47.8, automaton_sha256=baseline.digest(path))
+                        fitness=47.8, automaton_sha256=baseline.digest(path),
+                        input_offset=0, input_bytes=path.stat().st_size)
         return metadata, dict(gap='unused', gap_memory='1g', sgpdec_dir='unused',
                               sgpdec_commit=baseline.SGPDEC_COMMIT, timeout_seconds=1)
 

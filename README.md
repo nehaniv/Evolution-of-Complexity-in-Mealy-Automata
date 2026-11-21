@@ -71,9 +71,9 @@ COUNT=10 BATCH_SIZE=1 MAX_PARALLEL=10 bash baseline.sh submit "$HOME/scratch/mea
 
 The run directory contains:
 
-- `baseline_results.xlsx`: one row per automaton, with reachable state count, holonomy upper bound, lower bound, certified upper bound, exactness, fitness, status, seed, and provenance; a second sheet summarizes interval frequencies.
+- `baseline_results.xlsx`: one row per automaton, with reachable state count, holonomy upper bound, lower bound, certified upper bound, exactness, fitness, status, seed, and provenance; a separate sheet summarizes interval frequencies.
 - `baseline_results.csv` and `interval_distribution.csv`: the same measurements and grouped interval counts for analysis tools.
-- `automata/`: full transition/output tables for all 15 states, not just seeds.
+- `automata.jsonl`: full transition/output tables for all 15 states, not just seeds. `metadata.csv` indexes each record by byte offset, length, and SHA-256 checksum, avoiding thousands of small input files on the cluster filesystem.
 - `cases/`: separate logs, numeric bounds, lower-bound progress, and results for each automaton and attempt.
 - `manifest.json`, `analysis.json`, and `source/`: generation settings, file hashes, pinned software, and the exact run source.
 

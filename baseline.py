@@ -23,7 +23,8 @@ import time
 SGPDEC_COMMIT = '8e0f8cb20ace52762dc9dcc2be3358db4abc51bd'
 SAMPLING = 'forced Hamiltonian path 0->1->...->8; nonuniform constrained random'
 SOURCE_FILES = ('baseline.py', 'baseline.sh', 'baseline_analysis.g', 'ES-Automata-Fogel.py')
-META_FIELDS = ('automaton_id', 'seed', 'num_states', 'reachable_states', 'fitness', 'automaton_sha256')
+META_FIELDS = ('automaton_id', 'seed', 'num_states', 'reachable_states', 'fitness',
+               'automaton_sha256', 'input_offset', 'input_bytes')
 BOUND_FIELDS = ('holonomy_upper_bound', 'certified_upper_bound', 'lower_bound', 'exact',
                 'search_exhausted', 'edge_tests', 'lower_bound_elapsed_ms')
 RESULT_FIELDS = ('automaton_id', 'seed', 'reachable_states', 'holonomy_upper_bound',
@@ -109,7 +110,7 @@ def generate(args):
     if root.exists():
         raise ValueError(f'Run directory exists: {root}. Resume it or choose a new directory.')
     root.mkdir(parents=True)
-    for name in ('automata', 'source', 'logs'):
+    for name in ('source', 'logs'):
         (root / name).mkdir()
     source = Path(__file__).resolve().parent
     for name in SOURCE_FILES:
@@ -117,27 +118,33 @@ def generate(args):
     module = load_framework(root / 'source' / 'ES-Automata-Fogel.py')
     environment = module.EnvironmentDFA(8, ['0', '1'], variant='SimpleHardestEnvironment')
     rows = []
-    for identifier in range(1, args.count + 1):
-        seed = args.seed_start + identifier - 1
-        automaton = make_automaton(module, seed)
-        fitness, _ = module.multitraversal_fitness(automaton, environment)
-        data = {
-            'automaton_id': identifier, 'seed': seed, 'num_states': 15,
-            'reachable_states': 9, 'initial_state': 0, 'fitness': fitness,
-            'input_alphabet': automaton.input_alphabet, 'output_alphabet': automaton.output_alphabet,
-            'transitions': [[automaton.transitions[(s, a)] for a in automaton.input_alphabet]
+    with (root / 'automata.jsonl').open('wb') as archive:
+        for identifier in range(1, args.count + 1):
+            seed = args.seed_start + identifier - 1
+            automaton = make_automaton(module, seed)
+            fitness, _ = module.multitraversal_fitness(automaton, environment)
+            data = {
+                'automaton_id': identifier, 'seed': seed, 'num_states': 15,
+                'reachable_states': 9, 'initial_state': 0, 'fitness': fitness,
+                'input_alphabet': automaton.input_alphabet, 'output_alphabet': automaton.output_alphabet,
+                'transitions': [[automaton.transitions[(s, a)] for a in automaton.input_alphabet]
+                                for s in range(15)],
+                'outputs': [[automaton.outputs[(s, a)] for a in automaton.input_alphabet]
                             for s in range(15)],
-            'outputs': [[automaton.outputs[(s, a)] for a in automaton.input_alphabet]
-                        for s in range(15)],
-        }
-        path = root / 'automata' / f'{identifier:05d}.json'
-        save_json(path, data)
-        rows.append({**{key: data[key] for key in META_FIELDS[:-1]}, 'automaton_sha256': digest(path)})
-        if identifier % 1000 == 0:
-            print(f'Generated {identifier:,}/{args.count:,} automata', flush=True)
+            }
+            payload = (json.dumps(data, sort_keys=True, separators=(',', ':')) + '\n').encode()
+            offset = archive.tell()
+            archive.write(payload)
+            rows.append({**{key: data[key] for key in META_FIELDS[:5]},
+                         'automaton_sha256': hashlib.sha256(payload).hexdigest(),
+                         'input_offset': offset, 'input_bytes': len(payload)})
+            if identifier % 1000 == 0:
+                print(f'Generated {identifier:,}/{args.count:,} automata', flush=True)
     write_csv(root / 'metadata.csv', META_FIELDS, rows)
     save_json(root / 'manifest.json', {
-        'schema_version': 1, 'created_at': now(), 'count': args.count,
+        'schema_version': 2, 'created_at': now(), 'count': args.count,
+        'automata_sha256': digest(root / 'automata.jsonl'),
+        'automata_bytes': (root / 'automata.jsonl').stat().st_size,
         'seed_start': args.seed_start, 'num_states': 15, 'reachable_states': 9,
         'sampling': SAMPLING, 'fitness': 'MultiTraversal', 'environment': 'SimpleHardestEnvironment',
         'python_version': sys.version, 'metadata_sha256': digest(root / 'metadata.csv'),
@@ -148,6 +155,8 @@ def generate(args):
 
 def read_manifest(root):
     manifest = read_json(root / 'manifest.json')
+    if (root / 'automata.jsonl').stat().st_size != manifest['automata_bytes']:
+        raise ValueError('Automaton archive is missing data or has changed size')
     if digest(root / 'metadata.csv') != manifest['metadata_sha256']:
         raise ValueError('Metadata changed after generation')
     for name, checksum in manifest['source_sha256'].items():
@@ -285,6 +294,16 @@ QUIT;
     print(f'Preflight passed with SgpDec {args.sgpdec_commit}')
 
 
+
+def read_automaton(root, metadata):
+    with (root / 'automata.jsonl').open('rb') as archive:
+        archive.seek(metadata['input_offset'])
+        payload = archive.read(metadata['input_bytes'])
+    if hashlib.sha256(payload).hexdigest() != metadata['automaton_sha256']:
+        raise ValueError(f"Automaton {metadata['automaton_id']} changed after generation")
+    return json.loads(payload)
+
+
 def analyze_one(root, metadata, config):
     identifier = metadata['automaton_id']
     case = root / 'cases' / f'{identifier:05d}'
@@ -300,10 +319,7 @@ def analyze_one(root, metadata, config):
                 if not all(key in previous for key in BOUND_FIELDS):
                     raise ValueError('Stored completed result lacks bounds')
                 return True
-        data_path = root / 'automata' / f'{identifier:05d}.json'
-        if digest(data_path) != metadata['automaton_sha256']:
-            raise ValueError(f'Automaton {identifier} changed after generation')
-        data = read_json(data_path)
+        data = read_automaton(root, metadata)
         number = 1
         while (case / f'attempt-{number:04d}').exists():
             number += 1
@@ -359,7 +375,7 @@ def metadata_rows(root):
     with (root / 'metadata.csv').open(newline='') as stream:
         rows = list(csv.DictReader(stream))
     for row in rows:
-        for key in ('automaton_id', 'seed', 'num_states', 'reachable_states'):
+        for key in ('automaton_id', 'seed', 'num_states', 'reachable_states', 'input_offset', 'input_bytes'):
             row[key] = int(row[key])
         row['fitness'] = float(row['fitness'])
     return rows
