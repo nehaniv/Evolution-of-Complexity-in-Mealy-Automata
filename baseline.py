@@ -527,7 +527,7 @@ def main():
     check.add_argument('--sgpdec-dir', type=Path, required=True)
     check.add_argument('--sgpdec-commit', default=SGPDEC_COMMIT)
     check.add_argument('--gap-memory', default='24g')
-    check.add_argument('--timeout', type=positive, default=14400)
+    check.add_argument('--timeout', type=positive, default=7200)
     check.set_defaults(handler=preflight)
     worker = commands.add_parser('analyze', help='Analyze one array task; skip complete cases')
     worker.add_argument('--run-dir', type=Path, required=True)
