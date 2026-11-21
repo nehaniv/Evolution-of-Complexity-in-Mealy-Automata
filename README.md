@@ -29,17 +29,77 @@ The constrained random baseline and its GAP analysis are provided in:
 
 ## Constrained Random Baseline
 
-`baseline.sh` generates 10 automata using seeds 0–9, each with 15 states and exactly 9 states reachable from initial state 0. It evaluates them with `MultiTraversal` fitness in `SimpleHardestEnvironment`, using input symbols `1`–`8` and output symbols `0`–`1`, then runs GAP/SgpDec complexity analysis on their reachable parts.
+`baseline.sh` now runs a **10,000-automaton baseline** using seeds 0–9,999. Each automaton has 15 states and exactly 9 states reachable from initial state 0. The first 10 automata reproduce the ALIFE 2026 baseline. Fitness uses `MultiTraversal` in `SimpleHardestEnvironment`, with input symbols `1`–`8` and output symbols `0`–`1`.
 
-**Sampling limitation:** the generator forces a Hamiltonian path `0 -> 1 -> ... -> 8` through the reachable states and keeps all transitions from those states within `0`–`8`. This guarantees exactly 9 reachable states, but it does **not** sample uniformly from all 15-state automata with 9 reachable states. Automata whose reachable part has no Hamiltonian path starting at the initial state cannot be generated; the fixed state labels and forced path further constrain the sample. These results should therefore be interpreted as a constrained random baseline.
+**Sampling limitation:** the generator forces a Hamiltonian path `0 -> 1 -> ... -> 8` through the reachable states and keeps their transitions within `0`–`8`. It does **not** sample uniformly from all 15-state automata with 9 reachable states. Automata without a Hamiltonian path from the initial state through all reachable states cannot be generated. The fixed labels and forced path further constrain the sample.
 
-The script is configured for a Slurm cluster. Before running it, adjust the `#SBATCH` account and resource settings, Python module, virtual environment path, and `GAPCMD` to match your installation. Run it from a directory containing `baseline.sh` and `ES-Automata-Fogel.py` after installing the dependencies below:
+### SgpDec lower-bound branch
+
+The parallel baseline requires [`feature/essential-dependency-progress`](https://github.com/gap-packages/sgpdec/tree/feature/essential-dependency-progress), pinned by default to commit `8e0f8cb20ace52762dc9dcc2be3358db4abc51bd`. It calls `MaxChainOfEssentialDependencyWithProgress` and records its numeric lower bound, search status, and certified progress. It never estimates a lower bound by counting arrows in printed output.
+
+Use a separate, clean checkout so existing GAP installations remain available:
 
 ```bash
-sbatch baseline.sh
+git clone --branch feature/essential-dependency-progress https://github.com/gap-packages/sgpdec.git ~/sgpdec-lowerbounds
+git -C ~/sgpdec-lowerbounds checkout 8e0f8cb20ace52762dc9dcc2be3358db4abc51bd
+export SGPDEC_DIR="$HOME/sgpdec-lowerbounds"
+export GAPCMD="$HOME/gap/gap-4.14.0/gap"
 ```
 
-It produces GAP input and output files, CSV metadata and summaries, optional Excel/PDF reports, and a compressed results archive. Its fixed `BASELINE_STAMP` preserves the experiment's output naming; use a separate working directory for each run to avoid overwriting earlier results.
+GAP loads that exact checkout with `SetPackagePath`. A preflight checks the installed API and known complexity-0 and complexity-2 examples before any array is submitted. A different intended revision can be selected with `SGPDEC_COMMIT`, but it must provide this API and pass preflight. Every result records the revision used.
+
+### Submit on a Slurm cluster
+
+Run from the repository directory with the dependencies installed in `~/automata-env` (or set `AUTOMATA_ENV`). The defaults match the Nibi CPU allocation; adjust `SLURM_ACCOUNT` on another cluster.
+
+```bash
+export SLURM_ACCOUNT=def-nehaniv_cpu
+bash baseline.sh submit "$HOME/scratch/mealy-baseline-10000"
+```
+
+This generates and saves the automata, freezes a copy of the analysis source, checks SgpDec, and submits 1,000 independent array tasks of 10 automata each, with at most 50 tasks running concurrently. Each task requests one CPU, 32 GB RAM, and two days. Each GAP process has a 24 GB workspace limit and a four-hour timeout. A collector job runs after the array ends, including when tasks fail.
+
+A smaller pilot can be submitted first:
+
+```bash
+COUNT=10 BATCH_SIZE=1 MAX_PARALLEL=10 bash baseline.sh submit "$HOME/scratch/mealy-baseline-pilot"
+```
+
+`COUNT`, `SEED_START`, `BATCH_SIZE`, `MAX_PARALLEL`, `SLURM_MEMORY`, `SLURM_TIME`, `GAP_MEMORY`, `TIMEOUT_SECONDS`, `PYTHON_MODULE`, and `PYTHON` are configurable environment variables. Keep the task wall time longer than `BATCH_SIZE * TIMEOUT_SECONDS` plus startup time. Generate a dataset without Slurm using `bash baseline.sh generate RUN_DIRECTORY`.
+
+### Results and resuming
+
+The run directory contains:
+
+- `baseline_results.xlsx`: one row per automaton, with reachable state count, holonomy upper bound, lower bound, certified upper bound, exactness, fitness, status, seed, and provenance; a second sheet summarizes interval frequencies.
+- `baseline_results.csv` and `interval_distribution.csv`: the same measurements and grouped interval counts for analysis tools.
+- `automata/`: full transition/output tables for all 15 states, not just seeds.
+- `cases/`: separate logs, numeric bounds, lower-bound progress, and results for each automaton and attempt.
+- `manifest.json`, `analysis.json`, and `source/`: generation settings, file hashes, pinned software, and the exact run source.
+
+The holonomy upper bound is stored separately from `certified_upper_bound = min(holonomy_upper_bound, reachable_states - 1)`. The latter can stop the lower-bound search once exact complexity is proved. `search_exhausted` means the dependency search finished; it does not by itself mean the complexity is exact.
+
+Timeouts retain certified partial lower bounds when available and are labelled `timeout`. Missing or failed analyses have blank bounds, never invented zeros. Interval frequencies separate completed and timed-out searches, and fractions use all requested automata as the denominator. The collector returns exit code 2 if any analysis is unfinished, after saving the available results.
+
+```bash
+# Inspect or collect current results at any time.
+squeue -u "$USER"
+bash baseline.sh collect "$HOME/scratch/mealy-baseline-10000"
+
+# After the array ends, retry unfinished cases. Completed results are reused.
+bash baseline.sh resume "$HOME/scratch/mealy-baseline-10000"
+```
+
+Each retry preserves earlier attempt logs. Increase `TIMEOUT_SECONDS` and `SLURM_TIME` together when longer searches are needed; changing GAP or SgpDec requires a new run directory. Use a fresh directory for a new sample. Copy completed results from scratch to persistent storage under your cluster's retention policy.
+
+The original 10-automaton script remains available in the [ALIFE 2026 release](https://github.com/nehaniv/Evolution-of-Complexity-in-Mealy-Automata/releases/tag/alife-2026).
+
+### Validation
+
+```bash
+python3 -m unittest tests_baseline -v
+bash -n baseline.sh
+```
 
 ##  Python Environment Setup
 
