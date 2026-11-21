@@ -532,7 +532,7 @@ def main():
     worker = commands.add_parser('analyze', help='Analyze one array task; skip complete cases')
     worker.add_argument('--run-dir', type=Path, required=True)
     worker.add_argument('--task-id', type=nonnegative, default=0)
-    worker.add_argument('--batch-size', type=positive, default=10)
+    worker.add_argument('--batch-size', type=positive, default=20)
     worker.set_defaults(handler=analyze)
     collector = commands.add_parser('collect', help='Export all rows and interval frequencies')
     collector.add_argument('--run-dir', type=Path, required=True)

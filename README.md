@@ -57,7 +57,7 @@ export SLURM_ACCOUNT=def-nehaniv_cpu
 bash baseline.sh submit "$HOME/scratch/mealy-baseline-10000"
 ```
 
-This generates and saves the automata, freezes a copy of the analysis source, checks SgpDec, and submits 1,000 independent array tasks of 10 automata each, with at most 50 tasks running concurrently. Each task requests one CPU, 32 GB RAM, and two days. Each GAP process has a 24 GB workspace limit and a four-hour timeout. A collector job runs after the array ends, including when tasks fail.
+This generates and saves the automata, freezes a copy of the analysis source, checks SgpDec, and submits 500 independent array tasks of 20 automata each, with at most 50 tasks running concurrently. Each task requests one CPU, 32 GB RAM, and four days. Each GAP process has a 24 GB workspace limit and a four-hour timeout. A collector job runs after the array ends, including when tasks fail. The 500-task array leaves space for the collector under Nibi's 1,000-job submission limit.
 
 A smaller pilot can be submitted first:
 

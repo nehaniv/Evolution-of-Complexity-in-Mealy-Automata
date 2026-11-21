@@ -13,10 +13,10 @@ worker    Internal Slurm array entry point.
 
 Required for submit/resume: SGPDEC_DIR (clean lower-bound branch checkout).
 Optional: GAPCMD, SGPDEC_COMMIT, AUTOMATA_ENV, PYTHON_MODULE, PYTHON,
-          BATCH_SIZE=10, MAX_PARALLEL=50, SLURM_ACCOUNT=def-nehaniv_cpu,
-          SLURM_MEMORY=32G, SLURM_TIME=2-00:00:00,
+          BATCH_SIZE=20, MAX_PARALLEL=50, SLURM_ACCOUNT=def-nehaniv_cpu,
+          SLURM_MEMORY=32G, SLURM_TIME=4-00:00:00,
           GAP_MEMORY=24g, TIMEOUT_SECONDS=14400.
-Defaults give 1,000 array tasks with at most 50 running concurrently.
+Defaults give 500 array tasks with at most 50 running concurrently.
 HELP
 }
 
@@ -49,7 +49,7 @@ case "$MODE" in
   worker)
     exec "$PYTHON" "$RUN_DIR/source/baseline.py" analyze --run-dir "$RUN_DIR" \
       --task-id "${SLURM_ARRAY_TASK_ID:?Missing Slurm array task ID}" \
-      --batch-size "${BATCH_SIZE:-10}"
+      --batch-size "${BATCH_SIZE:-20}"
     ;;
   collect)
     exec "$PYTHON" "$RUN_DIR/source/baseline.py" collect --run-dir "$RUN_DIR"
@@ -73,7 +73,7 @@ case "$MODE" in
       --gap "${GAPCMD:-$HOME/gap/gap-4.14.0/gap}" --sgpdec-dir "$SGPDEC_DIR" \
       --sgpdec-commit "${SGPDEC_COMMIT:-8e0f8cb20ace52762dc9dcc2be3358db4abc51bd}" \
       --gap-memory "${GAP_MEMORY:-24g}" --timeout "${TIMEOUT_SECONDS:-14400}"
-    export BATCH_SIZE="${BATCH_SIZE:-10}"
+    export BATCH_SIZE="${BATCH_SIZE:-20}"
     export MAX_PARALLEL="${MAX_PARALLEL:-50}"
     LAST_TASK=$("$PYTHON" - "$RUN_DIR" "$BATCH_SIZE" "$MAX_PARALLEL" <<'PY'
 import json
@@ -88,7 +88,7 @@ PY
 )
     ARRAY_JOB=$(sbatch --parsable --job-name=mealy-baseline \
       --account="${SLURM_ACCOUNT:-def-nehaniv_cpu}" --cpus-per-task=1 \
-      --mem="${SLURM_MEMORY:-32G}" --time="${SLURM_TIME:-2-00:00:00}" \
+      --mem="${SLURM_MEMORY:-32G}" --time="${SLURM_TIME:-4-00:00:00}" \
       --array="0-${LAST_TASK}%${MAX_PARALLEL}" --chdir="$RUN_DIR" \
       --output="$RUN_DIR/logs/array-%A_%a.out" --error="$RUN_DIR/logs/array-%A_%a.err" \
       "$RUN_DIR/source/baseline.sh" worker "$RUN_DIR")
