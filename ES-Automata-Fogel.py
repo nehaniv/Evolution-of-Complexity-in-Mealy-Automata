@@ -394,6 +394,16 @@ def save_gap_file(automaton, run_number, timestamp, reachable_only):
     state_map = {old: i + 1 for i, old in enumerate(states)}  # 1-indexed
 
     with open(filename, 'w') as gf:
+        if len(states) == 1:
+            gf.write('Print("number of reachable states: 1\\n");\n')
+            gf.write('Print("complexity upper bound:0\\n");\n')
+            gf.write('Print("non-aperiodic:0\\n");\n')
+            gf.write(
+                'Print("\\nMax Chain of Essential Dependencies: '
+                'Maximum Chain Found:\\n\\n");\n'
+            )
+            return
+
         for inp in automaton.input_alphabet:
             next_states = [state_map[automaton.transitions[(s, inp)]] for s in states]
             outputs = [int(automaton.outputs[(s, inp)]) for s in states]
@@ -727,6 +737,8 @@ def create_report(fitness_name, env_variant, timestamp, best_per_run, parsed_res
 def generate_gap_runner(best_per_run, timestamp):
     gap_script = f"gap_runner_{timestamp}.g"
     with open(gap_script, "w") as f:
+        f.write('LoadPackage("SgpDec");\n')
+
         for i in range(len(best_per_run)):
             run_id = i + 1
             g_file = f"best_automaton_run_{run_id}_{timestamp}_reachable.g"
@@ -1096,6 +1108,20 @@ def create_gap_report(gap_output_file, timestamp, fitness_name, env_variant, par
 
 # ----------------- Main -----------------
 if __name__ == "__main__":
+    # Timeline mode: generation snapshots, first perfect traversal, deferred GAP.
+    # Keep MealyEvolutionTimeline.py beside this file.
+    import sys
+    if "--timeline" in sys.argv:
+        sys.argv.remove("--timeline")
+        from MealyEvolutionTimeline import main as timeline_main
+        if "--source" not in sys.argv:
+            sys.argv.extend(["--source", os.path.abspath(__file__)])
+        try:
+            sys.exit(timeline_main())
+        except KeyboardInterrupt:
+            print("Interrupted. Resume with --timeline --resume OUTPUT_DIRECTORY.", file=sys.stderr)
+            sys.exit(130)
+
 
     # Helper function to parse booleans from string
     def str2bool(v):
@@ -1108,7 +1134,7 @@ if __name__ == "__main__":
     # Argparse setup 
     parser = argparse.ArgumentParser(description="Mealy Automaton Evolution Strategy")
     parser.add_argument('--population_size', type=int, default=50)
-    parser.add_argument('--offspring_size', type=int, default=100)
+    parser.add_argument('--offspring_size', type=int, default=50)
     parser.add_argument('--num_states', type=int, default=10)
     parser.add_argument('--runs', type=int, default=10)
     parser.add_argument('--generations', type=int, default=100)

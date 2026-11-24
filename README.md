@@ -101,6 +101,54 @@ python3 -m unittest tests_baseline -v
 bash -n baseline.sh
 ```
 
+## Evolution timelines and group inventories
+
+`EvolutionaryTimeline.py` saves population-best checkpoints and first-perfect
+witnesses, then analyzes each reachable action with GAP/SgpDec. Alongside the
+complexity bounds and `holonomy_groups.csv`, it exports `permutator_groups.csv`
+and a **Permutator groups** worksheet in `experiment_results.xlsx`.
+
+Each permutator record includes run, generation, snapshot kind, skeleton level,
+representative index/set, action domain and degree, order, structure description,
+permutation generators, triviality and solvability. Pair it with its holonomy
+record using `(run, generation, snapshot_kind, level, representative_index)`;
+the representative sets are also checked for agreement. Permutator permutations
+act on the recorded domain using GAP labels `1..N`: label `j` corresponds to the
+`j`th sorted original reachable state in the snapshot. Fixed points are retained
+in the domain even when absent from the printed generators. Singleton classes
+are omitted from both inventories since their groups are trivial.
+
+To add these records to an existing completed experiment:
+
+```bash
+python3 EvolutionaryTimeline.py --analyze_only /path/to/experiment --gap /path/to/gap
+```
+
+The original bounds scripts and cache keys are unchanged. Valid bounds results
+are reused; a separate GAP pass constructs the skeleton and computes only the
+permutator inventory, without the essential-dependency lower-bound calculation.
+Its results are cached in `*.permutators.result.json`, with separate GAP scripts
+and logs. Subsequent analyses reuse both caches. As before, bounds caches require
+matching snapshots, scripts and GAP/SgpDec software metadata. The evolution and
+its random-number stream are unchanged. Exact evolution resumption still
+requires the original runner version; use the patched runner for analysis only
+on experiments created with the old runner.
+
+`non_solvable_group_occurrences` continues to count holonomy occurrences.
+`non_solvable_permutator_occurrences` counts permutator occurrences separately.
+These count non-solvable representative groups, rather than simple non-abelian
+composition factors. Repeated isomorphic groups on different representatives
+are retained. A failed/missing permutator analysis has a separate status and
+blank count, never a fabricated zero; validated bounds remain available.
+
+For comparisons with random baselines, use the same reachable-action restriction,
+group inventory convention, alphabet and number of complete states. Match or
+stratify by reachable-state count `N`. Compare independent baseline automata
+against the population best at common scheduled generations; event-driven
+snapshots and first-perfect witnesses have different sampling rules. Keep
+permutator and holonomy counts separate because the latter groups are quotients
+of the former.
+
 ##  Python Environment Setup
 
 We recommend using a Python virtual environment to manage dependencies cleanly.
@@ -153,3 +201,51 @@ Graphs (.pdf)
 Summary Excel files (.xlsx)
 
 Pickled best automata (.pkl)
+
+
+## Backfill permutators from the Nibi timeline bundle
+
+For the saved Mac/Nibi experiment, `BackfillPermutators.py` validates the original
+local logs and `nibi_analysis/batch*/jobs/*/analysis.log` results. It checks the
+snapshot and program hashes, software versions/modifications, Nibi log hashes,
+completion markers, and group inventories. Only the executable and installation
+paths may differ between Mac and Nibi. It does not read bounds from the spreadsheet.
+The whole experiment directory, including the Nibi task results, must be copied.
+
+From the repository with the usual Python environment and GAP installation:
+
+```bash
+python3 BackfillPermutators.py results/nibi_permutators --check_only
+python3 -u BackfillPermutators.py results/nibi_permutators --gap "$(command -v gap)" --limit 5
+python3 -u BackfillPermutators.py results/nibi_permutators --gap "$(command -v gap)"
+```
+
+The first command does not launch GAP or modify files. For the November 19 Nibi
+batch, the expected count is 546/548 unless additional analyses have since finished.
+The helper NEVER runs evolution or complexity-bound searches. Snapshots without
+validated bounds remain pending; fix those separately. `--limit 5` limits new
+permutator calculations to five for a smoke test. Rerunning without `--limit`
+reuses validated completed permutator logs. The process returns exit code 1 when
+any snapshot is pending or failed, including the two known missing bounds.
+
+New reports, logs, source copies, software metadata and caches go in
+`results/nibi_permutators/permutator_backfill/`; the original bounds files and
+reports are not changed. The new directory contains a relative `snapshots`
+symlink to the original snapshots. Keep both directories together if archiving
+it; the spreadsheet and group CSV files can be sent individually. Bounds log
+paths in `bounds_provenance.json` are relative to the original experiment.
+The two non-solvable occurrence counts remain separate. The new report includes
+only the snapshots, not per-generation metrics or fresh plots.
+
+Do not run two backfills in the same output directory simultaneously. The helper
+locks its own directory. Keep the Mac awake while it runs. If interrupted, repeat
+the same command: completed inventories are reused, and the current unfinished
+inventory is recalculated. Close the workbook before a rerun updates it.
+
+Validation: the supplemental parser/cache tests use simulated GAP output; the
+real long generation-30000 log was also reparsed successfully. Run the two live
+GAP tests on your own installation with:
+
+```bash
+SGPDEC_TEST_GAP="$(command -v gap)" python3 -m unittest discover -s tests -v
+```
