@@ -20,9 +20,13 @@ import subprocess
 import sys
 import time
 
+from uniform_sampling import UNIFORM_SAMPLING, make_uniform_automaton
+
 SGPDEC_COMMIT = '8e0f8cb20ace52762dc9dcc2be3358db4abc51bd'
 SAMPLING = 'forced Hamiltonian path 0->1->...->8; nonuniform constrained random'
-SOURCE_FILES = ('baseline.py', 'baseline.sh', 'baseline_analysis.g', 'ES-Automata-Fogel.py')
+SOURCE_FILES = ('baseline.py', 'baseline.sh', 'baseline_uniform.sh', 'uniform_sampling.py',
+                'baseline_analysis.g', 'ES-Automata-Fogel.py', 'baseline_inventory.py',
+                'baseline_inventory.g', 'baseline_inventory.sh')
 META_FIELDS = ('automaton_id', 'seed', 'num_states', 'reachable_states', 'fitness',
                'automaton_sha256', 'input_offset', 'input_bytes')
 BOUND_FIELDS = ('holonomy_upper_bound', 'certified_upper_bound', 'lower_bound', 'exact',
@@ -117,15 +121,16 @@ def generate(args):
         shutil.copy2(source / name, root / 'source' / name)
     module = load_framework(root / 'source' / 'ES-Automata-Fogel.py')
     environment = module.EnvironmentDFA(8, ['0', '1'], variant='SimpleHardestEnvironment')
+    uniform = getattr(args, 'sampling', 'hamiltonian') == 'uniform'
     rows = []
     with (root / 'automata.jsonl').open('wb') as archive:
         for identifier in range(1, args.count + 1):
             seed = args.seed_start + identifier - 1
-            automaton = make_automaton(module, seed)
+            automaton = make_uniform_automaton(module, seed) if uniform else make_automaton(module, seed)
             fitness, _ = module.multitraversal_fitness(automaton, environment)
             data = {
                 'automaton_id': identifier, 'seed': seed, 'num_states': 15,
-                'reachable_states': 9, 'initial_state': 0, 'fitness': fitness,
+                'reachable_states': 9, 'initial_state': automaton.initial_state, 'fitness': fitness,
                 'input_alphabet': automaton.input_alphabet, 'output_alphabet': automaton.output_alphabet,
                 'transitions': [[automaton.transitions[(s, a)] for a in automaton.input_alphabet]
                                 for s in range(15)],
@@ -146,7 +151,8 @@ def generate(args):
         'automata_sha256': digest(root / 'automata.jsonl'),
         'automata_bytes': (root / 'automata.jsonl').stat().st_size,
         'seed_start': args.seed_start, 'num_states': 15, 'reachable_states': 9,
-        'sampling': SAMPLING, 'fitness': 'MultiTraversal', 'environment': 'SimpleHardestEnvironment',
+        'sampling': UNIFORM_SAMPLING if uniform else SAMPLING,
+        'fitness': 'MultiTraversal', 'environment': 'SimpleHardestEnvironment',
         'python_version': sys.version, 'metadata_sha256': digest(root / 'metadata.csv'),
         'source_sha256': {name: digest(root / 'source' / name) for name in SOURCE_FILES},
     })
@@ -304,6 +310,25 @@ def read_automaton(root, metadata):
     return json.loads(payload)
 
 
+def reachable_generators(data, expected):
+    """Use the actual initial state and reachable labels, not fixed states 0..8."""
+    transitions = data['transitions']
+    seen, todo = set(), [data.get('initial_state', 0)]
+    while todo:
+        q = todo.pop()
+        if type(q) is not int or not 0 <= q < len(transitions):
+            raise ValueError('Invalid transition target or initial state')
+        if q not in seen:
+            seen.add(q)
+            todo.extend(transitions[q])
+    states = sorted(seen)
+    if len(states) != expected:
+        raise ValueError('Actual reachable-state count differs from metadata')
+    mapping = {q: j + 1 for j, q in enumerate(states)}
+    return [[mapping[transitions[q][a]] for q in states]
+            for a in range(len(transitions[states[0]]))]
+
+
 def analyze_one(root, metadata, config):
     identifier = metadata['automaton_id']
     case = root / 'cases' / f'{identifier:05d}'
@@ -329,20 +354,21 @@ def analyze_one(root, metadata, config):
                   'sgpdec_commit': config['sgpdec_commit'], 'attempt': str(attempt.relative_to(root)),
                   'timeout_seconds': config['timeout_seconds'], 'gap_memory': config['gap_memory']}
         save_json(result_path, result)
-        generators = ['Transformation([' + ','.join(str(data['transitions'][s][a] + 1)
-                      for s in range(9)) + '])' for a in range(8)]
+        reachable = metadata['reachable_states']
+        generators = ['Transformation(' + json.dumps(g) + ')'
+                      for g in reachable_generators(data, reachable)]
         script = attempt / 'analyze.g'
         script.write_text(gap_prelude(config) +
             f"Read({json.dumps(str(root / 'source' / 'baseline_analysis.g'))});\n" +
-            'AnalyzeBaseline([' + ',\n'.join(generators) + '], 9, ' + json.dumps(str(attempt)) + ');\nQUIT;\n')
+            'AnalyzeBaseline([' + ',\n'.join(generators) + f'], {reachable}, ' + json.dumps(str(attempt)) + ');\nQUIT;\n')
         started = time.monotonic()
         try:
             returncode, timed_out = run_gap(config, script, attempt / 'gap.log', config['timeout_seconds'])
             result['gap_returncode'] = returncode
             upper = read_fields(attempt / 'upper.tsv')
             validate_bounds(upper)
-            if upper and upper['reachable_states'] != 9:
-                raise ValueError('Analysis did not use all 9 reachable states')
+            if upper and upper['reachable_states'] != reachable:
+                raise ValueError('Analysis did not use the recorded reachable states')
             result.update(upper)
             if timed_out:
                 result['status'] = 'timeout'
@@ -411,7 +437,7 @@ def export_workbook(path, rows, summary, intervals):
     sheet.append(['Completed analyses', summary['complete']])
     sheet.append(['Available certified intervals', summary['intervals']])
     sheet.append(['Not completed', summary['expected'] - summary['complete']])
-    sheet.append(['Sampling', SAMPLING])
+    sheet.append(['Sampling', summary['sampling']])
     sheet.append(['Intervals include certified partial bounds; see status.'])
     sheet.append([])
     interval_fields = ('lower_bound', 'holonomy_upper_bound', 'certified_upper_bound', 'status', 'count', 'fraction_of_all')
@@ -487,7 +513,7 @@ def collect(args):
                  for key, count in sorted(groups.items())]
     summary = {'expected': manifest['count'], 'complete': counts['complete'],
                'intervals': len(valid), 'statuses': dict(counts), 'collected_at': now(),
-               'sampling': SAMPLING, 'sgpdec_commit': config.get('sgpdec_commit')}
+               'sampling': manifest.get('sampling', SAMPLING), 'sgpdec_commit': config.get('sgpdec_commit')}
     with exclusive_lock(root / 'collect.lock'):
         write_csv(root / 'baseline_results.csv', RESULT_FIELDS, rows)
         write_csv(root / 'interval_distribution.csv',
@@ -520,6 +546,8 @@ def main():
     generation.add_argument('--run-dir', type=Path, required=True)
     generation.add_argument('--count', type=positive, default=10000)
     generation.add_argument('--seed-start', type=nonnegative, default=0)
+    generation.add_argument('--sampling', choices=['uniform', 'hamiltonian'], default='uniform',
+                            help='Use baseline_uniform.sh for the required uniform baseline')
     generation.set_defaults(handler=generate)
     check = commands.add_parser('preflight', help='Verify pinned SgpDec and known bounds')
     check.add_argument('--run-dir', type=Path, required=True)

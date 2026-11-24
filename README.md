@@ -27,7 +27,75 @@ The constrained random baseline and its GAP analysis are provided in:
 
 - `baseline.sh`
 
-## Constrained Random Baseline
+## Uniform baseline for new comparisons
+
+Use **`baseline_uniform.sh`** for the required non-evolved baseline. It samples
+uniformly over labelled 15-state Mealy automata with a designated initial state,
+eight inputs, two outputs, and exactly nine reachable states. `uniform_sampling.py`
+chooses a nine-state subset uniformly, chooses the initial state uniformly within
+it, and samples all transitions within that subset independently and uniformly,
+rejecting only tables for which fewer than nine states are reachable. The
+acceptance probability is the same for every subset/initial-state choice.
+Transitions from the other six states and all output entries are sampled
+independently and uniformly. Thus each complete labelled automaton satisfying
+the condition has the same sampling probability; no Hamiltonian path is imposed.
+This is uniform over labelled automata, not over isomorphism classes.
+
+The first ten seeds reproduce the transition/output tables of the earlier
+uniform-generator package. The actual initial state and full tables are stored
+in `automata.jsonl`. Bound analysis and group inventories independently restrict
+to the actual reachable states and relabel them for GAP, rather than assuming
+that states `0..8` are the reachable set.
+
+With the same clean SgpDec checkout and GAP installation configured below:
+
+```bash
+# Small pilot in a NEW directory; wait for its bound array to finish.
+COUNT=2 BATCH_SIZE=1 MAX_PARALLEL=2 bash baseline_uniform.sh submit /path/to/uniform-pilot
+bash baseline_inventory.sh submit /path/to/uniform-pilot
+# After both arrays finish, collect current bounds plus structural data.
+bash baseline_uniform.sh collect /path/to/uniform-pilot
+bash baseline_inventory.sh collect /path/to/uniform-pilot
+
+# Production run, again in a NEW directory; defaults to seeds 0..9999.
+bash baseline_uniform.sh submit /path/to/uniform-10000
+# After its bound array finishes (or independently if cluster capacity permits):
+bash baseline_inventory.sh submit /path/to/uniform-10000
+# Recollect after all bound and inventory jobs finish.
+bash baseline_uniform.sh collect /path/to/uniform-10000
+bash baseline_inventory.sh collect /path/to/uniform-10000
+```
+
+The first job computes certified lower bounds and upper bounds capped at `N-1`.
+The second records representative holonomy and permutator groups, recomputes
+performance, and joins the saved bounds into CSV/Excel with the same group-count
+conventions as Annie's evolution timelines. See the supplementary-record section
+below for outputs and retry commands. Bounds and inventory statuses are separate.
+Before joining an existing bound, the inventory collector checks that its saved
+`analyze.g` generators equal the automaton's actual reachable action. Missing or
+mismatched GAP inputs give an invalid bound status and a diagnostic, with the
+original result untouched. A uniform generator inserted into the old fixed-state
+runner may therefore need its bounds recomputed from the saved automata.
+
+`baseline_uniform.sh` refuses to operate on an existing directory with a
+different sampling label. Preserve old datasets and their frozen `source/`
+copies; applying this patch does not change their sampling method or rerun them.
+An already valid uniform dataset can be backfilled directly if it uses the
+indexed-JSONL batch layout. Older `.g`/CSV-only data need a format adapter and
+must retain their original generator, metadata and complete automata. Do not
+regenerate or relabel such data merely to satisfy a filename convention.
+
+Direct `python3 baseline.py generate` also defaults to uniform sampling.
+`baseline.sh` explicitly selects the legacy Hamiltonian method for reproducing
+the paper's original baseline. Dataset labels in both summary workbooks come
+from the saved manifest.
+
+The recent 10,000-automaton runner is on `main` (November 2026 commits).
+`nina` and `nina-2` are older branches; `nina-2` has already been merged into
+`main`. Apply the combined patch on a clean branch based on current `main`.
+The original evolution code in `ES-Automata-Fogel.py` is unchanged.
+
+## Legacy Hamiltonian-path baseline
 
 `baseline.sh` now runs a **10,000-automaton baseline** using seeds 0–9,999. Each automaton has 15 states and exactly 9 states reachable from initial state 0. The first 10 automata reproduce the ALIFE 2026 baseline. Fitness uses `MultiTraversal` in `SimpleHardestEnvironment`, with input symbols `1`–`8` and output symbols `0`–`1`.
 
@@ -99,6 +167,114 @@ The original 10-automaton script remains available in the [ALIFE 2026 release](h
 ```bash
 python3 -m unittest tests_baseline -v
 bash -n baseline.sh
+```
+
+### Supplementary performance and group records
+
+`baseline_inventory.py` adds the structural and performance records used in
+`EvolutionaryTimeline.py`, including the new representative permutator inventory.
+It reads an existing baseline run and writes exclusively under its new
+`inventory/` directory. The generated automata, frozen `source/`, existing
+bound results and any running lower-bound searches are preserved. Use the
+supplement with the current `main` baseline format (`automata.jsonl`,
+`metadata.csv`, `manifest.json`, `analysis.json`); Annie's branch contains an
+older baseline script and does not supply that batch format.
+
+For Nina's existing 10,000-automaton dataset, install these new files beside
+`baseline.py` and run:
+
+```bash
+bash baseline_inventory.sh submit /path/to/ninas-baseline-run
+```
+
+The supplement uses the pinned GAP/SgpDec installation from `analysis.json`,
+checks the saved source and archive hashes, and freezes its own source. Its
+default array has 100 tasks of 100 automata with at most 50 tasks in parallel.
+Each inventory has a five-minute GAP limit; each task requests one day, one CPU
+and 32 GB. `INVENTORY_TIMEOUT_SECONDS`, `BATCH_SIZE`, `MAX_PARALLEL`,
+`SLURM_ACCOUNT`, `SLURM_MEMORY`, and `SLURM_TIME` are configurable. Choose a task
+wall time greater than batch size times inventory timeout plus startup/export
+overhead. Set `INVENTORY_TIMEOUT_SECONDS` explicitly on `resume` to raise the
+inventory retry limit; completed inventories remain cached, and each result
+retains its own timeout setting. Otherwise the existing limit is retained.
+This group pass builds a skeleton but does not run the essential-dependency
+lower-bound search. Completed inventories are cached separately.
+
+```bash
+# Collect at any time, including while the original bounds search is running.
+bash baseline_inventory.sh collect /path/to/ninas-baseline-run
+
+# Retry missing/failed inventories after the inventory array finishes.
+bash baseline_inventory.sh resume /path/to/ninas-baseline-run
+```
+
+For a small local pilot instead of Slurm:
+
+```bash
+python3 baseline_inventory.py prepare --run-dir /path/to/run --timeout 300
+python3 /path/to/run/inventory/source/baseline_inventory.py analyze \
+  --run-dir /path/to/run --task-id 0 --batch-size 2
+python3 /path/to/run/inventory/source/baseline_inventory.py collect --run-dir /path/to/run
+```
+
+`inventory/baseline_inventory_results.xlsx` and its corresponding CSV record:
+
+- Original automaton ID, seed, initial state, complete/reachable state counts,
+  sampling method, archive byte offsets and hashes, and the original reachable
+  state labels. Full transition/output tables remain in `automata.jsonl`; the
+  saved reachable labels identify both the restricted action and its relabelling.
+- Recomputed raw all-start traversal performance, penalized fitness, state cost,
+  per-start coverage and perfect-traversal status. Fitness is checked against the
+  original value using the saved evolution source.
+- Existing lower and upper bounds, bound status, and distance/normalized bounds
+  relative to `N-1`. The group pass also supplies a certified upper bound when
+  the lower-bound result is still pending. Recollect after the original bound
+  jobs finish to include their latest results.
+- Holonomy depth, number of group-bearing levels, and separate counts of
+  non-solvable holonomy and permutator group occurrences.
+- Inventory status, errors, elapsed time, GAP/Semigroups versions, SgpDec commit,
+  source hashes and analysis settings. Pending/failed counts remain blank.
+
+Separate `Holonomy groups` and `Permutator groups` worksheets and CSV files
+record one occurrence per representative per non-singleton skeleton level,
+retaining repetitions on distinct representatives. Each includes level,
+representative index/set, order, structure description, permutation generators,
+triviality and solvability; permutators additionally include their action domain
+and degree. Pair the two inventories using automaton ID, level and representative
+index. Permutator generators use GAP labels `1..N`, in the order of the sorted
+original reachable labels. Singleton classes are omitted since their groups are
+trivial. These are the same group/count conventions used in Annie's patch.
+
+`Group distribution` reports the joint frequency of the two non-solvable-group
+counts, with denominators for both all requested automata and completed
+inventories. Such counts measure group occurrences; SNAG composition-factor
+multiplicities require a subsequent calculation from the recorded groups. The
+two inventories should be analysed separately since holonomy groups are
+quotients of permutator groups. The Excel exporter streams large group tables
+and splits sheets if Excel's row limit is reached; CSV retains the whole table.
+
+Baseline records have automaton IDs instead of evolutionary run/generation and
+event fields. Population checkpoints and first-emergence times do not apply to
+independently generated baseline automata. The sampling label comes from the
+original manifest: running this supplement does not convert the Hamiltonian-path
+baseline into a uniform sample. Comparisons with uniform samples must retain
+that distinction and match the reachable-state count, alphabets and environment.
+
+```bash
+python3 -m unittest tests_baseline tests_baseline_inventory -v
+bash -n baseline_inventory.sh
+# To enable the live integration checks as well:
+SGPDEC_TEST_GAP=/path/to/gap SGPDEC_TEST_DIR=/path/to/sgpdec \
+  python3 -m unittest tests_baseline_inventory -v
+```
+
+Uniform sampler and full-pipeline checks:
+
+```bash
+python3 -m unittest tests_baseline tests_baseline_inventory tests_uniform_baseline -v
+bash -n baseline_uniform.sh
+SGPDEC_TEST_GAP=/path/to/gap SGPDEC_TEST_DIR=/path/to/sgpdec \
+  python3 -m unittest tests_baseline tests_baseline_inventory tests_uniform_baseline -v
 ```
 
 ##  Python Environment Setup

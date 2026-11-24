@@ -5,6 +5,9 @@ usage() {
   cat <<'HELP'
 Usage: bash baseline.sh {generate|submit|resume|worker|collect} RUN_DIRECTORY
 
+Legacy Hamiltonian-path baseline. For the required uniform baseline use:
+  bash baseline_uniform.sh submit RUN_DIRECTORY
+
 generate  Create 10,000 automata (COUNT and SEED_START override defaults).
 submit    Generate if needed, verify SgpDec, submit a Slurm array and collector.
 resume    Resubmit an existing run; completed automata are skipped.
@@ -44,7 +47,7 @@ RUN_DIR=$("$PYTHON" -c 'from pathlib import Path; import sys; print(Path(sys.arg
 case "$MODE" in
   generate)
     exec "$PYTHON" "$SOURCE_DIR/baseline.py" generate --run-dir "$RUN_DIR" \
-      --count "${COUNT:-10000}" --seed-start "${SEED_START:-0}"
+      --count "${COUNT:-10000}" --seed-start "${SEED_START:-0}" --sampling hamiltonian
     ;;
   worker)
     exec "$PYTHON" "$RUN_DIR/source/baseline.py" analyze --run-dir "$RUN_DIR" \
@@ -67,7 +70,7 @@ case "$MODE" in
     if [[ ! -f "$RUN_DIR/manifest.json" ]]; then
       if [[ "$MODE" == resume ]]; then echo 'No existing run to resume.' >&2; exit 1; fi
       "$PYTHON" "$SOURCE_DIR/baseline.py" generate --run-dir "$RUN_DIR" \
-        --count "${COUNT:-10000}" --seed-start "${SEED_START:-0}"
+        --count "${COUNT:-10000}" --seed-start "${SEED_START:-0}" --sampling hamiltonian
     fi
     "$PYTHON" "$RUN_DIR/source/baseline.py" preflight --run-dir "$RUN_DIR" \
       --gap "${GAPCMD:-$HOME/gap/gap-4.14.0/gap}" --sgpdec-dir "$SGPDEC_DIR" \
