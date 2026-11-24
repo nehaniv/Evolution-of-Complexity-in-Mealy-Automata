@@ -18,7 +18,8 @@ Generation 0 means the initial population, before evolution starts.
 
 After all runs finish:
 GAP analyzes the saved automata to calculate complexity bounds,
-holonomy groups, and the number of non-solvable group occurrences.
+holonomy and representative permutator groups, and their separate
+numbers of non-solvable group occurrences.
 Results are saved in experiment_results.xlsx, with CSV files and plots.
 Complexity is reported as a range unless the lower and upper bounds agree.
 
@@ -501,6 +502,112 @@ def parse_groups(text, holonomy_number):
     return groups, depth
 
 
+def permutator_program(snapshot):
+    """Separate inventory so existing, expensive bounds caches remain reusable.
+
+    Reuse the exact reachable action and skeleton construction from gap_program,
+    stopping before its holonomy inventory and lower-bound calculation.
+    """
+    code, marker, _ = gap_program(snapshot).partition('URA_SK := Skeleton(URA_S);;')
+    if snapshot['best_reachable_states'] > 1:
+        if not marker:
+            raise ValueError('Missing reachable skeleton construction')
+        code += '''URA_SK := Skeleton(URA_S);;
+URA_DEPTH := Maximum(0, DepthOfSkeleton(URA_SK)-1);;
+URA_GROUP_COUNT := 0;;
+if URA_DEPTH > 0 then
+  for URA_D in [1..URA_DEPTH] do
+    URA_REP := 0;
+    for URA_X in RepresentativeSets(URA_SK)[URA_D] do
+      URA_REP := URA_REP + 1;
+      URA_P := PermutatorGroup(URA_SK, URA_X);
+      URA_DOMAIN := ListBlist([1..URA_N], URA_X);
+      URA_GROUP_COUNT := URA_GROUP_COUNT + 1;
+      Print("URA_PERMUTATOR:", URA_D, "|", URA_REP, "|", String(URA_X), "|",
+            String(URA_DOMAIN), "|", Length(URA_DOMAIN), "|", Size(URA_P), "|",
+            StructureDescription(URA_P), "|", String(GeneratorsOfGroup(URA_P)), "|",
+            IsSolvableGroup(URA_P), "\\n");
+    od;
+  od;
+fi;
+'''
+    else:
+        # The one-state branch of gap_program already includes its completion
+        # markers and QUIT; use only the header, with an empty inventory.
+        code = GAP_HEADER + 'URA_N := 1;; URA_DEPTH := 0;; URA_GROUP_COUNT := 0;;\n'
+    return code + '''Print("URA_N:", URA_N, "\\n");
+Print("URA_DEPTH:", URA_DEPTH, "\\n");
+Print("URA_GROUP_COUNT:", URA_GROUP_COUNT, "\\n");
+Print("URA_PERMUTATORS_DONE\\n");
+QUIT_GAP(0);
+'''
+
+
+def parse_permutators(text, n, holonomy_groups, depth):
+    """Validate a complete inventory and pair it with the holonomy inventory."""
+    if 'URA_PERMUTATORS_DONE' not in text.splitlines():
+        raise ValueError('Missing exact permutator completion marker')
+    if (int(require_line(text, 'URA_N')) != n or
+            int(require_line(text, 'URA_DEPTH')) != depth):
+        raise ValueError('Permutator action/skeleton does not match bounds analysis')
+    expected = {(g['level'], g['representative_index']): g for g in holonomy_groups}
+    groups, seen = [], set()
+    for line in text.splitlines():
+        if not line.startswith('URA_PERMUTATOR:'):
+            continue
+        fields = [v.strip() for v in line[len('URA_PERMUTATOR:'):].split('|')]
+        if len(fields) != 9:
+            raise ValueError('Malformed permutator group record')
+        level, rep, representative, domain, degree, order, structure, generators, solvable = fields
+        level, rep, degree, order = int(level), int(rep), int(degree), int(order)
+        key = (level, rep)
+        h = expected.get(key)
+        if key in seen or h is None or order < 1 or solvable not in ('true', 'false'):
+            raise ValueError('Invalid or duplicate permutator group record')
+        # Both generators and domain use GAP's 1-based reachable-state labels.
+        points = json.loads(domain)
+        if (not isinstance(points, list) or any(type(p) is not int for p in points) or
+                len(points) != degree or degree < 2 or
+                points != sorted(set(points)) or not all(1 <= p <= n for p in points)):
+            raise ValueError('Invalid permutator action domain')
+        if re.sub(r'\s+', '', representative) != re.sub(r'\s+', '', h['representative_set']):
+            raise ValueError('Permutator and holonomy representatives differ')
+        if order % h['order'] or (solvable == 'true' and not h['solvable']):
+            raise ValueError('Holonomy group is inconsistent with its permutator quotient')
+        seen.add(key)
+        groups.append(dict(level=level, representative_index=rep, representative_set=representative,
+                           domain=domain, degree=degree, order=order, structure=structure,
+                           generators=generators, trivial=order == 1, solvable=solvable == 'true'))
+    if seen != set(expected) or int(require_line(text, 'URA_GROUP_COUNT')) != len(groups):
+        raise ValueError('Permutator group inventory is incomplete/inconsistent')
+    return groups
+
+
+def record_permutators(snapshot, snapshot_path, stem, software, software_key, bounds, timeout):
+    """Cache independently of bounds; retry only missing/failed inventories."""
+    code = permutator_program(snapshot)
+    key = hashlib.sha256((digest(snapshot_path) + code + software_key).encode()).hexdigest()
+    resultfile = stem.with_suffix('.permutators.result.json')
+    cached = read_json(resultfile) if resultfile.exists() else None
+    if cached and cached.get('cache_key') == key and cached['row']['permutator_status'] == 'completed':
+        return cached['row']
+    row = dict(permutator_status='failed', permutator_error='', permutator_groups='',
+               non_solvable_permutator_occurrences='')
+    stem.with_suffix('.permutators.g').write_text(code)
+    try:
+        text = gap_run(software['gap_executable'], stem.with_suffix('.permutators.g'),
+                       stem.with_suffix('.permutators.log'), timeout)
+        groups = parse_permutators(text, snapshot['best_reachable_states'],
+                                   json.loads(bounds['holonomy_groups']), bounds['holonomy_depth'])
+        row.update(permutator_status='completed', permutator_groups=json.dumps(groups),
+                   non_solvable_permutator_occurrences=sum(not g['solvable'] for g in groups))
+    except (OSError, ValueError, RuntimeError, subprocess.TimeoutExpired) as e:
+        row['permutator_error'] = str(e)
+        print(f'  PERMUTATORS FAILED: {e}', flush=True)
+    atomic_json(resultfile, {'cache_key': key, 'row': row})
+    return row
+
+
 def snapshots_for(out, cfg):
     paths = [out / 'snapshots' / f'run_{r:03d}' / f'gen_{g:06d}.json'
              for r in range(1, cfg['runs'] + 1) for g in cfg['record_generations']]
@@ -548,7 +655,13 @@ def analyze(out, cfg, software, timeout, render):
                 row['error'] = str(e)
                 print(f'  FAILED: {e}', flush=True)
             atomic_json(resultfile, {'cache_key': key, 'row': row})
-        if row['status'] != 'completed':
+        # Keep the original bounds cache/key intact, including on backfill.
+        row = dict(row, permutator_status='pending', permutator_error='', permutator_groups='',
+                   non_solvable_permutator_occurrences='',
+                   permutator_log=str(stem.with_suffix('.permutators.log').relative_to(out)))
+        if row['status'] == 'completed':
+            row.update(record_permutators(snap, path, stem, software, software_key, row, timeout))
+        if row['status'] != 'completed' or row['permutator_status'] != 'completed':
             failed += 1
         rows.append(row)
         save_csv(out / 'timeline.csv', rows)
@@ -560,6 +673,12 @@ def analyze(out, cfg, software, timeout, render):
             for group in json.loads(row['holonomy_groups']):
                 group_rows.append(dict(run=row['run'], generation=row['generation'], snapshot_kind=row['snapshot_kind'], **group))
     save_csv(out / 'holonomy_groups.csv', group_rows, ['run', 'generation', 'snapshot_kind', 'level', 'representative_index', 'representative_set', 'order', 'structure', 'generators', 'trivial', 'solvable'])
+    permutator_rows = []
+    for row in rows:
+        if row['permutator_status'] == 'completed':
+            for group in json.loads(row['permutator_groups']):
+                permutator_rows.append(dict(run=row['run'], generation=row['generation'], snapshot_kind=row['snapshot_kind'], **group))
+    save_csv(out / 'permutator_groups.csv', permutator_rows, ['run', 'generation', 'snapshot_kind', 'level', 'representative_index', 'representative_set', 'domain', 'degree', 'order', 'structure', 'generators', 'trivial', 'solvable'])
     print(f'GAP validated: {len(rows)-failed}/{len(rows)} snapshots', flush=True)
     return rows, failed
 
@@ -707,7 +826,7 @@ def export_spreadsheet(out, cfg):
     if (out / 'timeline.csv').exists():
         with (out / 'timeline.csv').open() as f:
             timeline = {r['snapshot']: r for r in csv.DictReader(f)}
-    checkpoints, groups, events = [], [], []
+    checkpoints, groups, permutators, events = [], [], [], []
     for path in paths:
         snap = read_json(path)
         row = dict(run=snap['run'], generation=snap['generation'],
@@ -716,11 +835,13 @@ def export_spreadsheet(out, cfg):
                    state_cost=snap['state_cost'], N=snap['best_reachable_states'],
                    perfect_traversal=snap['perfect_traversal'], L='', U='', holonomy_group_bearing_levels='',
                    holonomy_depth='', non_solvable_group_occurrences='', gap_status='pending',
+                   non_solvable_permutator_occurrences='', permutator_status='pending',
                    init_seed=snap['init_seed'], evolution_seed=snap['evolution_seed'],
                    automaton_file=str(path.relative_to(out)))
         measured = timeline.get(str(path.relative_to(out)))
         if measured:
             row['gap_status'] = measured['status']
+            row['permutator_status'] = measured.get('permutator_status', 'pending')
             if measured['status'] == 'completed':
                 for target, source in [('L','complexity_lower'), ('U','complexity_upper'),
                       ('holonomy_group_bearing_levels','holonomy_number'), ('holonomy_depth','holonomy_depth'),
@@ -728,6 +849,10 @@ def export_spreadsheet(out, cfg):
                     row[target] = int(measured[source])
                 for group in json.loads(measured['holonomy_groups']):
                     groups.append(dict(run=snap['run'], generation=snap['generation'], snapshot_kind=snap['snapshot_kind'], **group))
+                if row['permutator_status'] == 'completed':
+                    row['non_solvable_permutator_occurrences'] = int(measured['non_solvable_permutator_occurrences'])
+                    for group in json.loads(measured['permutator_groups']):
+                        permutators.append(dict(run=snap['run'], generation=snap['generation'], snapshot_kind=snap['snapshot_kind'], **group))
         checkpoints.append(row)
         if snap['snapshot_kind'] == 'first_perfect_witness' or 'reachable_state_count_changed' in snap['reasons']:
             events.append(dict(run=snap['run'], generation=snap['generation'], event=';'.join(snap['reasons']),
@@ -736,6 +861,9 @@ def export_spreadsheet(out, cfg):
     table('Checkpoints', checkpoints)
     table('Holonomy groups', groups, ['run','generation','snapshot_kind','level','representative_index',
                                     'representative_set','order','structure','generators','trivial','solvable'])
+    table('Permutator groups', permutators, ['run','generation','snapshot_kind','level','representative_index',
+                                          'representative_set','domain','degree','order','structure',
+                                          'generators','trivial','solvable'])
     table('Events', events, ['run','generation','event','fitness','unpenalized_performance','N','automaton_file'])
     meta = [dict(parameter=k, value=json.dumps(v) if isinstance(v,(dict,list)) else v) for k,v in cfg.items()]
     if (out/'software/software.json').exists():
@@ -743,6 +871,8 @@ def export_spreadsheet(out, cfg):
                     for k,v in read_json(out/'software/software.json').items())
     meta.extend([dict(parameter='Perfect all-start traversal',value='16 transitions from each of 8 starts within 100 steps; raw score 128'),
                  dict(parameter='Holonomy count',value='One group occurrence per representative per non-singleton decomposition level; duplicates retained'),
+                 dict(parameter='Permutator count',value='Same representatives as holonomy; separate occurrence count, not a sum with holonomy or a count of SNAG composition factors'),
+                 dict(parameter='Permutator coordinates',value='Domain and generators use GAP labels 1..N; label j corresponds to the jth sorted original reachable state. Singletons omitted (trivial groups).'),
                  dict(parameter='U definition',value='min(group-bearing holonomy levels, N-1)'),
                  dict(parameter='Best-so-far ties',value='Current best fitness survivor; original offspring-priority tie breaking retained'),
                  dict(parameter='Reachability',value='Reachable from the Mealy initial state under all input symbols'),
@@ -782,7 +912,7 @@ def arguments():
     p.add_argument('--output', type=Path)
     mode = p.add_mutually_exclusive_group()
     mode.add_argument('--resume', type=Path, help='Existing output directory; resume latest checkpoint')
-    mode.add_argument('--analyze_only', type=Path, help='Existing output directory; retry only failed/missing GAP results')
+    mode.add_argument('--analyze_only', type=Path, help='Existing output directory; reuse cached bounds and backfill/retry missing group inventories')
     p.add_argument('--gap', default='gap')
     p.add_argument('--gap_timeout', type=int, default=0, help='Seconds per snapshot; 0 means no limit')
     p.add_argument('--skip_gap', action='store_true', help='Evolution only; later use --analyze_only')

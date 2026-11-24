@@ -41,6 +41,54 @@ sbatch baseline.sh
 
 It produces GAP input and output files, CSV metadata and summaries, optional Excel/PDF reports, and a compressed results archive. Its fixed `BASELINE_STAMP` preserves the experiment's output naming; use a separate working directory for each run to avoid overwriting earlier results.
 
+## Evolution timelines and group inventories
+
+`EvolutionaryTimeline.py` saves population-best checkpoints and first-perfect
+witnesses, then analyzes each reachable action with GAP/SgpDec. Alongside the
+complexity bounds and `holonomy_groups.csv`, it exports `permutator_groups.csv`
+and a **Permutator groups** worksheet in `experiment_results.xlsx`.
+
+Each permutator record includes run, generation, snapshot kind, skeleton level,
+representative index/set, action domain and degree, order, structure description,
+permutation generators, triviality and solvability. Pair it with its holonomy
+record using `(run, generation, snapshot_kind, level, representative_index)`;
+the representative sets are also checked for agreement. Permutator permutations
+act on the recorded domain using GAP labels `1..N`: label `j` corresponds to the
+`j`th sorted original reachable state in the snapshot. Fixed points are retained
+in the domain even when absent from the printed generators. Singleton classes
+are omitted from both inventories since their groups are trivial.
+
+To add these records to an existing completed experiment:
+
+```bash
+python3 EvolutionaryTimeline.py --analyze_only /path/to/experiment --gap /path/to/gap
+```
+
+The original bounds scripts and cache keys are unchanged. Valid bounds results
+are reused; a separate GAP pass constructs the skeleton and computes only the
+permutator inventory, without the essential-dependency lower-bound calculation.
+Its results are cached in `*.permutators.result.json`, with separate GAP scripts
+and logs. Subsequent analyses reuse both caches. As before, bounds caches require
+matching snapshots, scripts and GAP/SgpDec software metadata. The evolution and
+its random-number stream are unchanged. Exact evolution resumption still
+requires the original runner version; use the patched runner for analysis only
+on experiments created with the old runner.
+
+`non_solvable_group_occurrences` continues to count holonomy occurrences.
+`non_solvable_permutator_occurrences` counts permutator occurrences separately.
+These count non-solvable representative groups, rather than simple non-abelian
+composition factors. Repeated isomorphic groups on different representatives
+are retained. A failed/missing permutator analysis has a separate status and
+blank count, never a fabricated zero; validated bounds remain available.
+
+For comparisons with random baselines, use the same reachable-action restriction,
+group inventory convention, alphabet and number of complete states. Match or
+stratify by reachable-state count `N`. Compare independent baseline automata
+against the population best at common scheduled generations; event-driven
+snapshots and first-perfect witnesses have different sampling rules. Keep
+permutator and holonomy counts separate because the latter groups are quotients
+of the former.
+
 ##  Python Environment Setup
 
 We recommend using a Python virtual environment to manage dependencies cleanly.
