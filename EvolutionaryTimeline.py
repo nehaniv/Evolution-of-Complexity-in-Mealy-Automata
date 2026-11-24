@@ -460,7 +460,7 @@ QUIT_GAP(0);
 
 
 def parse_bounds(text, n):
-    if 'URA_DONE' not in text.splitlines():
+    if text.splitlines().count('URA_DONE') != 1:
         raise ValueError('Missing exact GAP completion marker')
     if re.search(r'(?m)^\s*(?:Error,|Error:|Syntax error:)', text):
         raise ValueError('GAP error present')
@@ -476,21 +476,48 @@ def parse_bounds(text, n):
                 normalized_upper=upper / (n - 1) if n > 1 else '')
 
 
+def group_records(text, marker):
+    records, pending = [], None
+    for line in text.splitlines():
+        line = line.strip()
+        if line.startswith(marker):
+            if pending is not None:
+                raise ValueError('Unfinished group record before next group')
+            pending = line[len(marker):]
+        elif pending is not None:
+            if line.startswith(('URA_', '#I', 'Error', 'Syntax error')) or re.match(r'^\d+:', line):
+                raise ValueError('Unfinished group record before other output')
+            pending += ' ' + line
+        else:
+            continue
+        if re.search(r'\|\s*(?:true|false)\s*$', pending):
+            records.append(pending)
+            pending = None
+    if pending is not None:
+        raise ValueError('Unfinished group record at end of log')
+    return records
+
+
 def parse_groups(text, holonomy_number):
+    # GAP can insert both backslash continuations and ordinary pretty-print
+    # newlines inside one Print call. The final boolean terminates a record.
+    text = normalize_gap(text)
     depth = int(require_line(text, 'URA_DEPTH'))
     expected = int(require_line(text, 'URA_GROUP_COUNT'))
     groups = []
     identities = set()
-    for line in text.splitlines():
-        if not line.startswith('URA_GROUP:'):
-            continue
-        fields = line[len('URA_GROUP:'):].split('|')
+    records = group_records(text, "URA_GROUP:")
+    for record in records:
+        fields = record.split('|')
         if len(fields) != 7:
             raise ValueError('Malformed holonomy group record')
         level, rep, representative, order, structure, generators, solvable = [v.strip() for v in fields]
         if solvable not in ("true", "false"):
             raise ValueError("Missing group solvability")
         level, rep, order = int(level), int(rep), int(order)
+        if not (representative.startswith('[') and representative.endswith(']')
+                and generators.startswith('[') and generators.endswith(']') and structure):
+            raise ValueError('Malformed holonomy group field')
         if not 1 <= level <= depth or rep < 1 or order < 1 or (level, rep) in identities:
             raise ValueError('Invalid or duplicate holonomy group record')
         identities.add((level, rep))
@@ -545,17 +572,18 @@ QUIT_GAP(0);
 
 def parse_permutators(text, n, holonomy_groups, depth):
     """Validate a complete inventory and pair it with the holonomy inventory."""
-    if 'URA_PERMUTATORS_DONE' not in text.splitlines():
+    text = normalize_gap(text)
+    if re.search(r'(?m)^\s*(?:Error,|Error:|Syntax error:)', text):
+        raise ValueError('GAP error present')
+    if text.splitlines().count('URA_PERMUTATORS_DONE') != 1:
         raise ValueError('Missing exact permutator completion marker')
     if (int(require_line(text, 'URA_N')) != n or
             int(require_line(text, 'URA_DEPTH')) != depth):
         raise ValueError('Permutator action/skeleton does not match bounds analysis')
     expected = {(g['level'], g['representative_index']): g for g in holonomy_groups}
     groups, seen = [], set()
-    for line in text.splitlines():
-        if not line.startswith('URA_PERMUTATOR:'):
-            continue
-        fields = [v.strip() for v in line[len('URA_PERMUTATOR:'):].split('|')]
+    for record in group_records(text, 'URA_PERMUTATOR:'):
+        fields = [v.strip() for v in record.split('|')]
         if len(fields) != 9:
             raise ValueError('Malformed permutator group record')
         level, rep, representative, domain, degree, order, structure, generators, solvable = fields

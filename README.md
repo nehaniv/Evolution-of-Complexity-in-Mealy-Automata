@@ -141,3 +141,51 @@ Graphs (.pdf)
 Summary Excel files (.xlsx)
 
 Pickled best automata (.pkl)
+
+
+## Backfill permutators from the Nibi timeline bundle
+
+For the saved Mac/Nibi experiment, `BackfillPermutators.py` validates the original
+local logs and `nibi_analysis/batch*/jobs/*/analysis.log` results. It checks the
+snapshot and program hashes, software versions/modifications, Nibi log hashes,
+completion markers, and group inventories. Only the executable and installation
+paths may differ between Mac and Nibi. It does not read bounds from the spreadsheet.
+The whole experiment directory, including the Nibi task results, must be copied.
+
+From the repository with the usual Python environment and GAP installation:
+
+```bash
+python3 BackfillPermutators.py results/nibi_permutators --check_only
+python3 -u BackfillPermutators.py results/nibi_permutators --gap "$(command -v gap)" --limit 5
+python3 -u BackfillPermutators.py results/nibi_permutators --gap "$(command -v gap)"
+```
+
+The first command does not launch GAP or modify files. For the November 19 Nibi
+batch, the expected count is 546/548 unless additional analyses have since finished.
+The helper NEVER runs evolution or complexity-bound searches. Snapshots without
+validated bounds remain pending; fix those separately. `--limit 5` limits new
+permutator calculations to five for a smoke test. Rerunning without `--limit`
+reuses validated completed permutator logs. The process returns exit code 1 when
+any snapshot is pending or failed, including the two known missing bounds.
+
+New reports, logs, source copies, software metadata and caches go in
+`results/nibi_permutators/permutator_backfill/`; the original bounds files and
+reports are not changed. The new directory contains a relative `snapshots`
+symlink to the original snapshots. Keep both directories together if archiving
+it; the spreadsheet and group CSV files can be sent individually. Bounds log
+paths in `bounds_provenance.json` are relative to the original experiment.
+The two non-solvable occurrence counts remain separate. The new report includes
+only the snapshots, not per-generation metrics or fresh plots.
+
+Do not run two backfills in the same output directory simultaneously. The helper
+locks its own directory. Keep the Mac awake while it runs. If interrupted, repeat
+the same command: completed inventories are reused, and the current unfinished
+inventory is recalculated. Close the workbook before a rerun updates it.
+
+Validation: the supplemental parser/cache tests use simulated GAP output; the
+real long generation-30000 log was also reparsed successfully. Run the two live
+GAP tests on your own installation with:
+
+```bash
+SGPDEC_TEST_GAP="$(command -v gap)" python3 -m unittest discover -s tests -v
+```
